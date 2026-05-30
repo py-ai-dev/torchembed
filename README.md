@@ -18,7 +18,7 @@
 pip install torchembed
 ```
 
-Requires Python ≥ 3.9 and PyTorch ≥ 2.0. No other required dependencies.
+Requires Python ≥ 3.10 and PyTorch ≥ 2.0. No other required dependencies.
 
 ---
 
