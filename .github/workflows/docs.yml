@@ -34,8 +34,7 @@ jobs:
         run: |
           pdoc -o docs/api --docformat google \
             torchembed torchembed.positional torchembed.fourier \
-            torchembed.categorical torchembed.patch torchembed.temporal \
-            torchembed._triton
+            torchembed.categorical torchembed.patch torchembed.temporal
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
