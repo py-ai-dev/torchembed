@@ -35,6 +35,8 @@ class RotaryEmbedding(nn.Module):
             will be computed on the fly.
         base: Base for the geometric progression of frequencies. Default 10000
             matches the original paper. LLaMA 3 uses 500000.
+        use_fused: If True, uses a fused triton kernel for the forward pass
+            (requires GPU and ``triton``). Default False.
         device: Device to create buffers on.
 
     Example::
@@ -50,6 +52,7 @@ class RotaryEmbedding(nn.Module):
         dim: int,
         max_seq_len: int = 2048,
         base: int = 10_000,
+        use_fused: bool = False,
         device: Optional[torch.device] = None,
     ) -> None:
         super().__init__()
@@ -59,9 +62,12 @@ class RotaryEmbedding(nn.Module):
         self.dim = dim
         self.max_seq_len = max_seq_len
         self.base = base
+        self.use_fused = use_fused
 
         # Precompute inverse frequencies: shape (dim/2,)
-        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2, device=device).float() / dim))  # noqa: E501
+        inv_freq = 1.0 / (
+            base ** (torch.arange(0, dim, 2, device=device).float() / dim)
+        )  # noqa: E501
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 
         # Precompute cos/sin cache
@@ -69,15 +75,32 @@ class RotaryEmbedding(nn.Module):
 
     def _build_cache(self, seq_len: int, device: Optional[torch.device] = None) -> None:
         t = torch.arange(seq_len, device=device or self.inv_freq.device).float()
-        freqs = torch.outer(t, self.inv_freq)          # (seq_len, dim/2)
-        emb = torch.cat([freqs, freqs], dim=-1)        # (seq_len, dim)
+        freqs = torch.outer(t, self.inv_freq)  # (seq_len, dim/2)
+        emb = torch.cat([freqs, freqs], dim=-1)  # (seq_len, dim)
         self.register_buffer("cos_cache", emb.cos(), persistent=False)
         self.register_buffer("sin_cache", emb.sin(), persistent=False)
 
-    def _rotate_half(self, x: Tensor) -> Tensor:
+    @staticmethod
+    def _rotate_half(x: Tensor) -> Tensor:
         """Rotate the last dimension by splitting and negating halves."""
         x1, x2 = x.chunk(2, dim=-1)
         return torch.cat([-x2, x1], dim=-1)
+
+    def _vanilla_forward(
+        self, q: Tensor, k: Tensor, cos: Tensor, sin: Tensor
+    ) -> tuple[Tensor, Tensor]:  # noqa: E501
+        cos = cos.unsqueeze(0).unsqueeze(0)
+        sin = sin.unsqueeze(0).unsqueeze(0)
+        q_rot = q * cos + self._rotate_half(q) * sin
+        k_rot = k * cos + self._rotate_half(k) * sin
+        return q_rot, k_rot
+
+    def _fused_forward(
+        self, q: Tensor, k: Tensor, cos: Tensor, sin: Tensor
+    ) -> tuple[Tensor, Tensor]:  # noqa: E501
+        from torchembed._triton import fused_rope_forward
+
+        return fused_rope_forward(q, k, cos, sin)
 
     def forward(self, q: Tensor, k: Tensor, seq_dim: int = -2) -> tuple[Tensor, Tensor]:
         """Apply rotary embeddings to query and key tensors.
@@ -96,19 +119,16 @@ class RotaryEmbedding(nn.Module):
             self._build_cache(seq_len, q.device)
             self.max_seq_len = seq_len
 
-        cos = self.cos_cache[:seq_len]  # (seq_len, dim)
-        sin = self.sin_cache[:seq_len]
+        cos = self.cos_cache[:seq_len].to(device=q.device)
+        sin = self.sin_cache[:seq_len].to(device=q.device)
 
-        # Broadcast to match q/k shape
-        # q/k: (..., seq_len, dim) — add leading dims for broadcasting
-        while cos.dim() < q.dim():
-            cos = cos.unsqueeze(0)
-            sin = sin.unsqueeze(0)
+        if self.use_fused and q.is_cuda and k.is_cuda:
+            try:
+                return self._fused_forward(q, k, cos, sin)
+            except (ImportError, RuntimeError):
+                pass
 
-        q_rot = q * cos + self._rotate_half(q) * sin
-        k_rot = k * cos + self._rotate_half(k) * sin
-
-        return q_rot, k_rot
+        return self._vanilla_forward(q, k, cos, sin)
 
 
 class ALiBiEmbedding(nn.Module):
@@ -141,8 +161,8 @@ class ALiBiEmbedding(nn.Module):
         super().__init__()
         self.num_heads = num_heads
 
-        slopes = self._get_slopes(num_heads)           # (num_heads,)
-        bias = self._build_bias(slopes, max_seq_len)   # (num_heads, seq, seq)
+        slopes = self._get_slopes(num_heads)  # (num_heads,)
+        bias = self._build_bias(slopes, max_seq_len)  # (num_heads, seq, seq)
         self.register_buffer("bias", bias, persistent=False)
 
     @staticmethod
@@ -176,8 +196,8 @@ class ALiBiEmbedding(nn.Module):
             Attention scores with ALiBi bias added, same shape as input.
         """
         seq_len = attn_scores.shape[-1]
-        bias = self.bias[:, :seq_len, :seq_len]   # (heads, seq, seq)
-        return attn_scores + bias.unsqueeze(0)     # broadcast over batch
+        bias = self.bias[:, :seq_len, :seq_len]  # (heads, seq, seq)
+        return attn_scores + bias.unsqueeze(0)  # broadcast over batch
 
 
 class SinusoidalEmbedding(nn.Module):
@@ -219,7 +239,7 @@ class SinusoidalEmbedding(nn.Module):
         self.dropout = nn.Dropout(p=dropout) if dropout > 0 else nn.Identity()
         self.scale = nn.Parameter(torch.ones(1)) if learned_scale else None
 
-        pe = self._build_pe(dim, max_seq_len)   # (1, max_seq_len, dim)
+        pe = self._build_pe(dim, max_seq_len)  # (1, max_seq_len, dim)
         self.register_buffer("pe", pe, persistent=False)
 
     @staticmethod

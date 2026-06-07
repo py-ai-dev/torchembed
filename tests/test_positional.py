@@ -51,7 +51,7 @@ class TestRotaryEmbedding:
         rope = RotaryEmbedding(dim=dim, max_seq_len=8)
         q = torch.randn(1, 1, 32, dim)
         k = torch.randn(1, 1, 32, dim)
-        q_rot, k_rot = rope(q, k)   # Should not raise
+        q_rot, k_rot = rope(q, k)  # Should not raise
         assert q_rot.shape == q.shape
 
     def test_no_learned_parameters(self, dim):
@@ -76,6 +76,84 @@ class TestRotaryEmbedding:
         k = torch.randn(2, 4, 8, dim)
         q_rot, k_rot = rope(q, k)
         assert q_rot.shape == q.shape
+
+
+class TestFusedRotaryEmbedding:
+    """Tests for the triton-fused RoPE kernel (GPU only)."""
+
+    @pytest.fixture
+    def rope(self, dim):
+        return RotaryEmbedding(dim=dim)
+
+    @pytest.fixture
+    def rope_cuda(self, dim):
+        if not torch.cuda.is_available():
+            pytest.skip("CUDA not available")
+        return RotaryEmbedding(dim=dim, device="cuda")
+
+    def test_matches_vanilla(self, rope_cuda, dim):
+        """Fused and vanilla should produce identical results."""
+        rope = rope_cuda
+        q = torch.randn(2, 4, 8, dim, device="cuda")
+        k = torch.randn(2, 4, 8, dim, device="cuda")
+        q_ref, k_ref = rope(q, k)
+        cos, sin = rope.cos_cache[:8], rope.sin_cache[:8]
+        q_fused, k_fused = rope._fused_forward(q, k, cos, sin)
+        torch.testing.assert_close(q_fused, q_ref, atol=1e-5, rtol=1e-5)
+        torch.testing.assert_close(k_fused, k_ref, atol=1e-5, rtol=1e-5)
+
+    def test_use_fused_flag(self, dim):
+        """Setting use_fused=True should dispatch to the fused kernel."""
+        if not torch.cuda.is_available():
+            pytest.skip("CUDA not available")
+        rope = RotaryEmbedding(dim=dim, use_fused=True).to("cuda")
+        q = torch.randn(2, 4, 8, dim, device="cuda")
+        k = torch.randn(2, 4, 8, dim, device="cuda")
+        q_rot, k_rot = rope(q, k)
+        assert q_rot.shape == q.shape
+        assert k_rot.shape == k.shape
+
+    def test_various_shapes(self):
+        """Fused kernel should handle various batch/head/seq/dim combos."""
+        if not torch.cuda.is_available():
+            pytest.skip("CUDA not available")
+        for dim in [32, 64, 128]:
+            rope = RotaryEmbedding(dim=dim, device="cuda")
+            q = torch.randn(1, 4, 16, dim, device="cuda")
+            k = torch.randn(1, 4, 16, dim, device="cuda")
+            q_ref, k_ref = rope(q, k)
+            cos, sin = rope.cos_cache[:16], rope.sin_cache[:16]
+            q_fused, k_fused = rope._fused_forward(q, k, cos, sin)
+            torch.testing.assert_close(q_fused, q_ref, atol=1e-5, rtol=1e-5)
+            torch.testing.assert_close(k_fused, k_ref, atol=1e-5, rtol=1e-5)
+
+    def test_gradient_flows(self, dim):
+        """Gradients should flow through the fused kernel."""
+        if not torch.cuda.is_available():
+            pytest.skip("CUDA not available")
+        rope = RotaryEmbedding(dim=dim, device="cuda")
+        q = torch.randn(2, 4, 8, dim, device="cuda", requires_grad=True)
+        k = torch.randn(2, 4, 8, dim, device="cuda", requires_grad=True)
+        q_rot, k_rot = rope._fused_forward(q, k, rope.cos_cache[:8], rope.sin_cache[:8])
+        loss = q_rot.sum() + k_rot.sum()
+        loss.backward()
+        assert q.grad is not None
+        assert k.grad is not None
+
+    def test_fused_forward_function(self, dim):
+        """Direct call to fused_rope_forward should match."""
+        if not torch.cuda.is_available():
+            pytest.skip("CUDA not available")
+        from torchembed._triton import fused_rope_forward
+
+        rope = RotaryEmbedding(dim=dim, device="cuda")
+        q = torch.randn(2, 4, 8, dim, device="cuda")
+        k = torch.randn(2, 4, 8, dim, device="cuda")
+        q_ref, k_ref = rope(q, k)
+        cos, sin = rope.cos_cache[:8], rope.sin_cache[:8]
+        q_fused, k_fused = fused_rope_forward(q, k, cos, sin)
+        torch.testing.assert_close(q_fused, q_ref, atol=1e-5, rtol=1e-5)
+        torch.testing.assert_close(k_fused, k_ref, atol=1e-5, rtol=1e-5)
 
 
 class TestALiBiEmbedding:
@@ -107,7 +185,7 @@ class TestALiBiEmbedding:
     def test_diagonal_is_zero_penalty(self, num_heads):
         """Self-attention positions (distance=0) should have zero bias."""
         alibi = ALiBiEmbedding(num_heads=num_heads, max_seq_len=16)
-        bias = alibi.bias   # (heads, seq, seq)
+        bias = alibi.bias  # (heads, seq, seq)
         diagonal = torch.diagonal(bias, dim1=-2, dim2=-1)
         torch.testing.assert_close(diagonal, torch.zeros_like(diagonal))
 
@@ -139,6 +217,13 @@ class TestSinusoidalEmbedding:
         params = list(emb.parameters())
         assert len(params) == 1
         assert params[0].numel() == 1
+
+    def test_learned_scale_forward(self, batch_size, seq_len, dim):
+        """Forward pass with learned_scale=True should work and change output."""
+        emb = SinusoidalEmbedding(dim=dim, learned_scale=True)
+        x = torch.randn(batch_size, seq_len, dim)
+        out = emb(x)
+        assert out.shape == x.shape
 
     def test_deterministic(self, batch_size, seq_len, dim):
         """Same input should always produce same output."""
