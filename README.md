@@ -108,6 +108,20 @@ rope = RotaryEmbedding(dim=64, use_fused=True)
 
 The fused RoPE kernel combines cos/sin lookup, rotate-half, and element-wise multiplication into a single triton launch, reducing memory traffic. Supports any even dim (32, 64, 128, etc.) and full autograd support. Falls back to vanilla PyTorch automatically when triton is unavailable or inputs are on CPU.
 
+### Benchmarks
+
+RoPE forward pass on NVIDIA GB10 (float16):
+
+| Shape (B,H,S,D,rot) | PyTorch (ms) | torch.compile (ms) | Triton (ms) | Speedup |
+|---|---|---|---|---|
+| (1,32,2048,128,128) | 1.40 | 0.61 | 0.34 | **4.15x** |
+| (1,32,4096,128,128) | 2.95 | 1.21 | 0.63 | **4.68x** |
+| (1,32,8192,128,128) | 5.94 | 2.47 | 1.29 | **4.62x** |
+| (2,32,2048,128,128) | 2.97 | 1.23 | 0.75 | **3.98x** |
+| (1,32,2048,256,128) | 2.87 | 1.24 | 0.66 | **4.34x** |
+
+The fused Triton kernel is **~4x faster than pure PyTorch** and **~2x faster than `torch.compile`**. `torch.compile` reduces overhead but cannot eliminate intermediate tensor allocations from `chunk`/`cat` — the fused kernel reads and writes each element exactly once.
+
 ---
 
 ## Documentation
