@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "torchembed"
-version = "0.3.0"
+version = "0.3.1"
 description = "A PyTorch library of modern embedding strategies missing from torch.nn"
 readme = "README.md"
 license = { file = "LICENSE" }

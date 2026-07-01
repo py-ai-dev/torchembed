@@ -140,6 +140,42 @@ class TestFusedRotaryEmbedding:
         assert q.grad is not None
         assert k.grad is not None
 
+    def test_gradient_correctness(self, dim):
+        """Fused kernel gradients must numerically match the vanilla path's.
+
+        RoPE's forward is a per-position rotation matrix [[c, -s], [s, c]] applied
+        to each (x0, x1) pair; its backward is that matrix's transpose, not the
+        forward transform reapplied unchanged. A prior bug reused the forward
+        kernel verbatim for backward, which silently produced wrong gradients
+        for every dim with sin != 0. `torch.testing.assert_close` on the grads
+        (not just shape/is-not-None) is what catches a regression here.
+        """
+        if not torch.cuda.is_available():
+            pytest.skip("CUDA not available")
+        rope = RotaryEmbedding(dim=dim, device="cuda")
+        cos, sin = rope.cos_cache[:8], rope.sin_cache[:8]
+
+        torch.manual_seed(0)
+        q_base = torch.randn(2, 4, 8, dim, device="cuda")
+        k_base = torch.randn(2, 4, 8, dim, device="cuda")
+        grad_q_up = torch.randn_like(q_base)
+        grad_k_up = torch.randn_like(k_base)
+
+        q_ref = q_base.clone().requires_grad_(True)
+        k_ref = k_base.clone().requires_grad_(True)
+        q_rot_ref, k_rot_ref = rope(q_ref, k_ref)
+        q_rot_ref.backward(grad_q_up, retain_graph=True)
+        k_rot_ref.backward(grad_k_up)
+
+        q_fused = q_base.clone().requires_grad_(True)
+        k_fused = k_base.clone().requires_grad_(True)
+        q_rot_fused, k_rot_fused = rope._fused_forward(q_fused, k_fused, cos, sin)
+        q_rot_fused.backward(grad_q_up, retain_graph=True)
+        k_rot_fused.backward(grad_k_up)
+
+        torch.testing.assert_close(q_fused.grad, q_ref.grad, atol=1e-4, rtol=1e-4)
+        torch.testing.assert_close(k_fused.grad, k_ref.grad, atol=1e-4, rtol=1e-4)
+
     def test_fused_forward_function(self, dim):
         """Direct call to fused_rope_forward should match."""
         if not torch.cuda.is_available():

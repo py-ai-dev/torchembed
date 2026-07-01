@@ -91,7 +91,10 @@ if triton is not None:
         @staticmethod
         def backward(ctx, grad_output):
             cos, sin = ctx.saved_tensors
-            grad_input = _fused_rope_forward_core(grad_output, cos, sin)
+            # Forward applies rotation matrix [[c, -s], [s, c]] to x. Its gradient
+            # w.r.t. x is the transpose [[c, s], [-s, c]], which is the same rotation
+            # kernel run with sin negated (a rotation matrix's transpose is its inverse).
+            grad_input = _fused_rope_forward_core(grad_output, cos, -sin)
             return grad_input, None, None
 
     def _fused_rope_forward_core(x, cos, sin):
