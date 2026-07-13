@@ -253,6 +253,17 @@ make docs-serve   # serves at http://localhost:8080
 
 API docs are generated from Google-style docstrings using [pdoc](https://pdoc.dev/).
 
+## Related projects
+
+| Project | Focus |
+|---|---|
+| [Liger Kernel](https://github.com/linkedin/Liger-Kernel) | Full training optimization suite including fused RoPE + RMSNorm + SwiGLU with automatic model patching |
+| [torchnorm](https://github.com/liodon-ai/torchnorm) | Companion library: fused RMSNorm, FusedAddRMSNorm, LayerNorm, GroupNorm kernels |
+| [rotary-embedding-torch](https://github.com/lucidrains/rotary-embedding-torch) | Pure PyTorch RoPE, no Triton |
+| [flash-attn](https://github.com/Dao-AILab/flash-attention) | Flash Attention with built-in fused RoPE support |
+
+**torchembed vs Liger Kernel for RoPE**: Liger patches model classes wholesale — the right choice when you want `use_liger_kernel=True` and one-line integration. torchembed provides individual `nn.Module` drop-ins (both `rotate_half` and `adjacent_pairs` conventions) for use in custom architectures, ViT patch embeddings, diffusion models, and audio models where full model patching isn't the goal.
+
 ## Contributing
 
 Contributions welcome! If there's an embedding strategy you find yourself copy-pasting into projects, open a PR with a clear docstring (paper reference included), tests covering shape/gradients/key mathematical properties, and a README example.
