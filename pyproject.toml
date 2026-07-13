@@ -4,16 +4,22 @@ build-backend = "hatchling.build"
 
 [project]
 name = "torchembed"
-version = "0.3.1"
+version = "0.3.2"
 description = "A PyTorch library of modern embedding strategies missing from torch.nn"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.9"
-authors = [{ name = "torchembed contributors" }]
-keywords = ["pytorch", "embeddings", "deep-learning", "transformers", "rope", "alibi"]
+authors = [{ name = "Liodon AI", email = "py.oss.ml@gmail.com" }]
+keywords = [
+    "pytorch", "embeddings", "deep-learning", "transformers", "rope",
+    "alibi", "triton", "fused-kernels", "positional-encoding",
+    "rotary-embeddings", "vision-transformer", "diffusion-models",
+    "llm", "gpu", "cuda", "fourier-features", "patch-embedding",
+]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
@@ -21,6 +27,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
     "torch>=2.0",
